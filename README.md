@@ -1,0 +1,2 @@
+# SDLShooter-Web
+SDL???? - ? HTML5 Canvas + JavaScript ?
