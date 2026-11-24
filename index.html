@@ -1,0 +1,900 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SDL太空战机 - HTML5 版</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    width: 100%; height: 100%;
+    background: #000;
+    overflow: hidden;
+    font-family: "Microsoft YaHei", "SimHei", sans-serif;
+    user-select: none;
+  }
+  #gameContainer {
+    position: absolute;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+  }
+  canvas {
+    display: block;
+    border: 2px solid #333;
+    background: #000;
+    image-rendering: pixelated;
+  }
+  #loading {
+    position: absolute;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    color: #fff;
+    font-size: 18px;
+    text-align: center;
+  }
+  #loading .bar {
+    width: 200px; height: 12px;
+    background: #333;
+    margin-top: 12px;
+    border-radius: 4px;
+    overflow: hidden;
+  }
+  #loading .bar-fill {
+    height: 100%;
+    width: 0%;
+    background: #4fc3f7;
+    transition: width 0.2s;
+  }
+</style>
+</head>
+<body>
+<div id="gameContainer">
+  <canvas id="game" width="600" height="800"></canvas>
+  <div id="loading">
+    加载资源中...
+    <div class="bar"><div class="bar-fill" id="barFill"></div></div>
+  </div>
+</div>
+
+<script>
+// ============================================================
+// SDL太空战机 - 纯 HTML5 Canvas + JavaScript 版
+// ============================================================
+
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = canvas.width;
+const H = canvas.height;
+
+// ---------- 难度 ----------
+const Difficulty = { Easy: 0, Normal: 1, Hard: 2 };
+const diffName = d => ["简单", "普通", "困难"][d];
+const nextDiff = d => (d + 1) % 3;
+const prevDiff = d => (d + 2) % 3;
+
+// ---------- 游戏状态 ----------
+const State = { TITLE: 'title', MAIN: 'main', HELP: 'help', END: 'end' };
+
+// ---------- 资源 ----------
+const ASSETS = {
+  images: {
+    player:    'assets/image/SpaceShip.png',
+    bulletP:   'assets/image/laser-1.png',
+    bulletE:   'assets/image/bullet-1.png',
+    enemy:     'assets/image/insect-2.png',
+    itemLife:  'assets/image/bonus_life.png',
+    itemShield:'assets/image/bonus_shield.png',
+    itemTime:  'assets/image/bonus_time.png',
+    heart:     'assets/image/Health UI Black.png',
+    bgA:       'assets/image/Stars-A.png',
+    bgB:       'assets/image/Stars-B.png',
+    bgMain:    'assets/image/bg.png',
+    explosion: 'assets/effect/explosion.png',
+  },
+  sounds: {
+    shootP: 'assets/sound/laser_shoot4.wav',
+    shootE: 'assets/sound/xs_laser.wav',
+    expE:   'assets/sound/explosion3.wav',
+    expP:   'assets/sound/explosion1.wav',
+    hit:    'assets/sound/eff11.wav',
+    item:   'assets/sound/eff5.wav',
+  },
+  music: {
+    title: 'assets/music/06_Battle_in_Space_Intro.ogg',
+    main:  'assets/music/03_Racing_Through_Asteroids_Loop.ogg',
+  }
+};
+
+// ---------- 资源加载 ----------
+const Resources = {
+  images: {},
+  sounds: {},
+  music: {},
+  loadAll() {
+    const total = Object.keys(ASSETS.images).length + Object.keys(ASSETS.sounds).length + Object.keys(ASSETS.music).length;
+    let loaded = 0;
+    const bar = document.getElementById('barFill');
+    const updateBar = () => {
+      loaded++;
+      if (bar) bar.style.width = (loaded / total * 100) + '%';
+      if (loaded >= total) {
+        setTimeout(() => {
+          document.getElementById('loading').style.display = 'none';
+          Game.start();
+        }, 300);
+      }
+    };
+
+    // 图片
+    for (const [key, src] of Object.entries(ASSETS.images)) {
+      const img = new Image();
+      img.onload = () => { this.images[key] = img; updateBar(); };
+      img.onerror = () => { this.images[key] = null; updateBar(); };
+      img.src = src;
+    }
+    // 音效
+    for (const [key, src] of Object.entries(ASSETS.sounds)) {
+      const a = new Audio();
+      a.preload = 'auto';
+      a.oncanplaythrough = () => { this.sounds[key] = a; updateBar(); };
+      a.onerror = () => { this.sounds[key] = null; updateBar(); };
+      a.src = src;
+    }
+    // 音乐
+    for (const [key, src] of Object.entries(ASSETS.music)) {
+      const a = new Audio();
+      a.preload = 'auto';
+      a.loop = true;
+      a.oncanplaythrough = () => { this.music[key] = a; updateBar(); };
+      a.onerror = () => { this.music[key] = null; updateBar(); };
+      a.src = src;
+    }
+  },
+  playSound(key) {
+    const a = this.sounds[key];
+    if (a) {
+      try { a.currentTime = 0; a.play().catch(() => {}); } catch {}
+    }
+  },
+  playMusic(key) {
+    const a = this.music[key];
+    if (a) { try { a.play().catch(() => {}); } catch {} }
+  },
+  stopMusic() {
+    for (const a of Object.values(this.music)) {
+      if (a) { try { a.pause(); a.currentTime = 0; } catch {} }
+    }
+  }
+};
+
+// ---------- 输入 ----------
+const Input = {
+  keys: {},
+  pressed: {},
+  init() {
+    window.addEventListener('keydown', e => {
+      const k = e.key.toLowerCase();
+      if (!this.keys[k]) this.pressed[k] = true;
+      this.keys[k] = true;
+      if (['arrowup','arrowdown','arrowleft','arrowright',' '].includes(k)) e.preventDefault();
+    });
+    window.addEventListener('keyup', e => {
+      this.keys[e.key.toLowerCase()] = false;
+    });
+    // 点击画布解锁音频
+    canvas.addEventListener('click', () => {
+      // 触发一次空音频播放来解锁
+      const a = new Audio(); a.play().catch(() => {});
+    });
+  },
+  isDown(k) { return !!this.keys[k.toLowerCase()]; },
+  wasPressed(k) {
+    const p = !!this.pressed[k.toLowerCase()];
+    this.pressed[k.toLowerCase()] = false;
+    return p;
+  },
+  endFrame() { this.pressed = {}; }
+};
+
+// ---------- 辅助 ----------
+function rand(a, b) { return a + Math.random() * (b - a); }
+function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+function rectIntersect(a, b) {
+  return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+}
+
+// ---------- 游戏对象 ----------
+class Player {
+  constructor() {
+    this.w = 52; this.h = 48;
+    this.x = W / 2 - this.w / 2;
+    this.y = H - this.h - 20;
+    this.speed = 300;
+    this.maxHp = 3;
+    this.hp = 3;
+    this.coolDown = 300;
+    this.lastShoot = 0;
+  }
+  update(dt, now) {
+    if (Input.isDown('w') || Input.isDown('arrowup'))    this.y -= this.speed * dt;
+    if (Input.isDown('s') || Input.isDown('arrowdown'))  this.y += this.speed * dt;
+    if (Input.isDown('a') || Input.isDown('arrowleft'))  this.x -= this.speed * dt;
+    if (Input.isDown('d') || Input.isDown('arrowright')) this.x += this.speed * dt;
+    this.x = clamp(this.x, 0, W - this.w);
+    this.y = clamp(this.y, 0, H - this.h);
+
+    const canShoot = now - this.lastShoot > this.coolDown;
+    if (Input.isDown('j') && (Game.cheats.rapidFire || canShoot)) {
+      Game.scene.projectilesP.push(new ProjectileP(this.x + this.w/2 - 3, this.y));
+      Resources.playSound('shootP');
+      this.lastShoot = now;
+    }
+  }
+  render() {
+    if (Game.scene.isDead) return;
+    const img = Resources.images.player;
+    if (img) ctx.drawImage(img, this.x, this.y, this.w, this.h);
+    else {
+      ctx.fillStyle = '#4fc3f7';
+      ctx.beginPath();
+      ctx.moveTo(this.x + this.w/2, this.y);
+      ctx.lineTo(this.x + this.w, this.y + this.h);
+      ctx.lineTo(this.x, this.y + this.h);
+      ctx.closePath(); ctx.fill();
+    }
+  }
+}
+
+class Enemy {
+  constructor() {
+    this.w = 40; this.h = 36;
+    this.x = rand(0, W - this.w);
+    this.y = -this.h;
+    this.speed = 150;
+    this.hp = 2;
+    this.maxHp = 2;
+    this.coolDown = 2000;
+    this.lastShoot = 0;
+  }
+  update(dt, now) {
+    if (!Game.cheats.freezeEnemy) this.y += this.speed * dt;
+    if (this.y > H) { this.dead = true; return; }
+    if (!Game.cheats.freezeEnemy && !Game.scene.isDead &&
+        now - this.lastShoot > this.coolDown) {
+      Game.scene.enemyShoot(this);
+      this.lastShoot = now;
+    }
+    if (this.hp <= 0) { this.dead = true; Game.scene.killEnemy(this); }
+  }
+  render() {
+    const img = Resources.images.enemy;
+    if (img) ctx.drawImage(img, this.x, this.y, this.w, this.h);
+    else {
+      ctx.fillStyle = '#f44';
+      ctx.fillRect(this.x, this.y, this.w, this.h);
+    }
+  }
+}
+
+class ProjectileP {
+  constructor(x, y) {
+    this.x = x; this.y = y; this.w = 6; this.h = 14;
+    this.speed = 600; this.dead = false;
+  }
+  update(dt) {
+    this.y -= this.speed * dt;
+    if (this.y < -32) this.dead = true;
+  }
+  render() {
+    const img = Resources.images.bulletP;
+    if (img) ctx.drawImage(img, this.x, this.y, this.w, this.h);
+    else { ctx.fillStyle = '#ff0'; ctx.fillRect(this.x, this.y, this.w, this.h); }
+  }
+}
+
+class ProjectileE {
+  constructor(x, y, dx, dy) {
+    this.x = x; this.y = y; this.w = 8; this.h = 8;
+    this.speed = 400; this.dead = false;
+    this.dx = dx; this.dy = dy;
+  }
+  update(dt) {
+    const m = Game.cheats.slowBullets ? 0.1 : 1;
+    this.x += this.speed * this.dx * dt * m;
+    this.y += this.speed * this.dy * dt * m;
+    if (this.x < -32 || this.x > W + 32 || this.y < -32 || this.y > H + 32) this.dead = true;
+  }
+  render() {
+    const img = Resources.images.bulletE;
+    if (img) ctx.drawImage(img, this.x, this.y, this.w, this.h);
+    else { ctx.fillStyle = '#f66'; ctx.beginPath(); ctx.arc(this.x+4, this.y+4, 4, 0, Math.PI*2); ctx.fill(); }
+  }
+}
+
+class Explosion {
+  constructor(x, y) {
+    this.x = x; this.y = y; this.w = 64; this.h = 64;
+    this.start = performance.now();
+    this.fps = 10;
+    this.totalFrames = 9;
+  }
+  update() {
+    const frame = Math.floor((performance.now() - this.start) * this.fps / 1000);
+    if (frame >= this.totalFrames) this.dead = true;
+  }
+  render() {
+    const frame = Math.floor((performance.now() - this.start) * this.fps / 1000);
+    if (frame >= this.totalFrames) return;
+    const img = Resources.images.explosion;
+    if (img && img.width > 0) {
+      const frameW = img.width / this.totalFrames;
+      const sw = frameW * 2, sh = img.height * 2;
+      ctx.drawImage(img, frame * frameW, 0, frameW, img.height, this.x, this.y, this.w, this.h);
+    } else {
+      ctx.globalAlpha = 1 - frame / this.totalFrames;
+      ctx.fillStyle = '#fa0';
+      ctx.beginPath();
+      ctx.arc(this.x + this.w/2, this.y + this.h/2, this.w/2 * (1 + frame * 0.1), 0, Math.PI*2);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+  }
+}
+
+class Item {
+  constructor(x, y) {
+    this.x = x; this.y = y; this.w = 24; this.h = 24;
+    const ang = Math.random() * Math.PI * 2;
+    this.dx = Math.cos(ang); this.dy = Math.sin(ang);
+    this.speed = 200;
+    this.bounces = 3;
+    this.type = Math.random() < 0.6 ? 'life' : (Math.random() < 0.5 ? 'shield' : 'time');
+  }
+  update(dt) {
+    this.x += this.dx * this.speed * dt;
+    this.y += this.dy * this.speed * dt;
+    if (this.bounces > 0 && this.x < 0) { this.dx = -this.dx; this.bounces--; }
+    if (this.bounces > 0 && this.x + this.w > W) { this.dx = -this.dx; this.bounces--; }
+    if (this.bounces > 0 && this.y < 0) { this.dy = -this.dy; this.bounces--; }
+    if (this.bounces > 0 && this.y + this.h > H) { this.dy = -this.dy; this.bounces--; }
+    if (this.x < -50 || this.x > W + 50 || this.y < -50 || this.y > H + 50) this.dead = true;
+  }
+  render() {
+    const key = this.type === 'life' ? 'itemLife' : this.type === 'shield' ? 'itemShield' : 'itemTime';
+    const img = Resources.images[key];
+    if (img) ctx.drawImage(img, this.x, this.y, this.w, this.h);
+    else {
+      ctx.fillStyle = this.type === 'life' ? '#4f4' : '#44f';
+      ctx.fillRect(this.x, this.y, this.w, this.h);
+    }
+  }
+}
+
+// ---------- 背景 ----------
+class StarField {
+  constructor(speed, count) {
+    this.stars = [];
+    this.speed = speed;
+    for (let i = 0; i < count; i++) {
+      this.stars.push({
+        x: Math.random() * W,
+        y: Math.random() * H,
+        s: Math.random() * 2 + 1
+      });
+    }
+  }
+  update(dt) {
+    for (const s of this.stars) {
+      s.y += this.speed * dt;
+      if (s.y > H) { s.y = -2; s.x = Math.random() * W; }
+    }
+  }
+  render() {
+    ctx.fillStyle = '#fff';
+    for (const s of this.stars) {
+      ctx.globalAlpha = Math.min(1, s.s / 3);
+      ctx.fillRect(s.x, s.y, s.s, s.s);
+    }
+    ctx.globalAlpha = 1;
+  }
+}
+
+// ---------- 场景 ----------
+class Scene {
+  update(dt, now) {}
+  render() {}
+  handleEvent() {}
+  cleanup() {}
+}
+
+class SceneTitle extends Scene {
+  constructor() { super(); this.timer = 0; }
+  update(dt, now) {
+    this.timer += dt;
+    if (this.timer > 1) this.timer -= 1;
+  }
+  render() {
+    Game.farStars.render();
+    Game.nearStars.render();
+
+    // 标题
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 48px "Microsoft YaHei", sans-serif';
+    ctx.fillText('SDL太空战机', W / 2, H * 0.32);
+
+    // 难度选择
+    ctx.font = '24px "Microsoft YaHei", sans-serif';
+    ctx.fillStyle = '#ccc';
+    ctx.fillText('难度', W / 2, H * 0.48);
+
+    // 上一个
+    ctx.font = '20px sans-serif';
+    ctx.fillStyle = '#666';
+    ctx.fillText('[ ' + diffName(prevDiff(Game.difficulty)) + ' ]', W / 2, H * 0.54);
+
+    // 当前高亮（闪烁）
+    ctx.font = 'bold 28px sans-serif';
+    ctx.fillStyle = '#ffd700';
+    ctx.fillText('> ' + diffName(Game.difficulty) + ' <', W / 2, H * 0.60);
+
+    // 下一个
+    ctx.font = '20px sans-serif';
+    ctx.fillStyle = '#666';
+    ctx.fillText('[ ' + diffName(nextDiff(Game.difficulty)) + ' ]', W / 2, H * 0.66);
+
+    // 底部提示
+    if (this.timer < 0.5) {
+      ctx.font = '18px sans-serif';
+      ctx.fillStyle = '#fff';
+      ctx.fillText('按 J 键开始游戏', W / 2, H * 0.82);
+      ctx.font = '14px sans-serif';
+      ctx.fillStyle = '#888';
+      ctx.fillText('按 R 查看帮助   上下键切换难度', W / 2, H * 0.88);
+    }
+  }
+  handleEvent() {
+    if (Input.wasPressed('w') || Input.wasPressed('arrowup'))
+      Game.difficulty = prevDiff(Game.difficulty);
+    if (Input.wasPressed('s') || Input.wasPressed('arrowdown'))
+      Game.difficulty = nextDiff(Game.difficulty);
+    if (Input.wasPressed('j')) {
+      Game.changeScene(new SceneMain());
+    }
+    if (Input.wasPressed('r')) {
+      Game.changeScene(new SceneHelp());
+    }
+  }
+}
+
+class SceneHelp extends Scene {
+  update() {}
+  render() {
+    Game.farStars.render();
+    Game.nearStars.render();
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 36px "Microsoft YaHei", sans-serif';
+    ctx.fillText('操作说明', W / 2, 120);
+
+    ctx.font = '20px sans-serif';
+    ctx.textAlign = 'left';
+    const lines = [
+      '  W / ↑  向上移动',
+      '  S / ↓  向下移动',
+      '  A / ←  向左移动',
+      '  D / →  向右移动',
+      '  J      射击',
+      '  ESC    返回标题',
+      '  R      打开帮助',
+      '',
+      '作弊器（主游戏中）：',
+      '  F1 无敌模式',
+      '  F2 一击必杀',
+      '  F3 极速射击',
+      '  F5 冻结敌机',
+      '  F6 慢速敌弹',
+      '  F7 +1000分',
+    ];
+    ctx.fillStyle = '#ddd';
+    lines.forEach((l, i) => {
+      ctx.fillText(l, 80, 200 + i * 32);
+    });
+
+    ctx.textAlign = 'center';
+    ctx.font = '16px sans-serif';
+    ctx.fillStyle = '#ffd700';
+    ctx.fillText('按 R 或 ESC 返回', W / 2, H - 40);
+  }
+  handleEvent() {
+    if (Input.wasPressed('r') || Input.wasPressed('escape')) {
+      Game.changeScene(new SceneTitle());
+    }
+  }
+}
+
+class SceneMain extends Scene {
+  constructor() {
+    super();
+    this.player = new Player();
+    this.enemies = [];
+    this.projectilesP = [];
+    this.projectilesE = [];
+    this.explosions = [];
+    this.items = [];
+    this.spawnTimer = 0;
+    this.isDead = false;
+    this.deadTimer = 0;
+    this.score = 0;
+    this.scoreCache = '';
+    this.applyDifficulty(Game.difficulty);
+  }
+  applyDifficulty(d) {
+    this.spawnInterval = 0.8;
+    this.itemDropChance = 0.5;
+    this.enemySpeed = 150;
+    this.enemyHp = 2;
+    this.enemyCoolDown = 2000;
+    this.player.coolDown = 300;
+
+    if (d === Difficulty.Easy) {
+      this.enemySpeed = 105;
+      this.enemyHp = 1;
+      this.enemyCoolDown = 2500;
+      this.player.maxHp = 5;
+      this.player.coolDown = 400;
+      this.spawnInterval = 1.2;
+      this.itemDropChance = 0.6;
+    } else if (d === Difficulty.Hard) {
+      this.enemySpeed = 210;
+      this.enemyHp = 3;
+      this.enemyCoolDown = 1200;
+      this.player.maxHp = 1;
+      this.player.coolDown = 200;
+      this.spawnInterval = 0.5;
+      this.itemDropChance = 0.35;
+    }
+    this.player.hp = this.player.maxHp;
+    this.player.coolDown = this.player.coolDown;
+  }
+
+  update(dt, now) {
+    this.player.update(dt, now);
+
+    // 玩家子弹
+    for (const p of this.projectilesP) p.update(dt);
+    this.projectilesP = this.projectilesP.filter(p => !p.dead);
+
+    // 敌弹
+    for (const p of this.projectilesE) p.update(dt);
+    this.projectilesE = this.projectilesE.filter(p => !p.dead);
+
+    // 敌机生成
+    this.spawnTimer += dt;
+    if (this.spawnTimer >= this.spawnInterval && this.enemies.length < 30) {
+      this.spawnTimer = 0;
+      const e = new Enemy();
+      e.speed = this.enemySpeed;
+      e.hp = this.enemyHp;
+      e.maxHp = this.enemyHp;
+      e.coolDown = this.enemyCoolDown;
+      e.lastShoot = now;
+      this.enemies.push(e);
+    }
+
+    // 敌机更新
+    for (const e of this.enemies) e.update(dt, now);
+
+    // 爆炸
+    for (const ex of this.explosions) ex.update();
+    this.explosions = this.explosions.filter(e => !e.dead);
+
+    // 道具
+    for (const it of this.items) it.update(dt);
+
+    // 碰撞：玩家子弹 vs 敌机
+    for (const p of this.projectilesP) {
+      const pr = { x: p.x, y: p.y, w: p.w, h: p.h };
+      for (const e of this.enemies) {
+        if (e.dead) continue;
+        const er = { x: e.x, y: e.y, w: e.w, h: e.h };
+        if (rectIntersect(pr, er)) {
+          e.hp = Game.cheats.oneHitKill ? 0 : e.hp - 1;
+          p.dead = true;
+          Resources.playSound('hit');
+          break;
+        }
+      }
+    }
+
+    // 碰撞：敌弹 vs 玩家
+    if (!this.isDead) {
+      const pl = { x: this.player.x, y: this.player.y, w: this.player.w, h: this.player.h };
+      for (const p of this.projectilesE) {
+        if (p.dead) continue;
+        if (rectIntersect({ x: p.x, y: p.y, w: p.w, h: p.h }, pl)) {
+          if (!Game.cheats.godMode) this.player.hp -= 1;
+          p.dead = true;
+          Resources.playSound('hit');
+        }
+      }
+    }
+
+    // 碰撞：玩家 vs 敌机（撞击）
+    if (!this.isDead) {
+      const pl = { x: this.player.x, y: this.player.y, w: this.player.w, h: this.player.h };
+      for (const e of this.enemies) {
+        if (e.dead) continue;
+        if (rectIntersect(pl, { x: e.x, y: e.y, w: e.w, h: e.h })) {
+          if (!Game.cheats.godMode) this.player.hp -= 1;
+          e.hp = 0;
+          break;
+        }
+      }
+    }
+
+    // 碰撞：玩家 vs 道具
+    if (!this.isDead) {
+      const pl = { x: this.player.x, y: this.player.y, w: this.player.w, h: this.player.h };
+      for (const it of this.items) {
+        if (it.dead) continue;
+        if (rectIntersect(pl, { x: it.x, y: it.y, w: it.w, h: it.h })) {
+          this.playerGetItem(it);
+          it.dead = true;
+        }
+      }
+    }
+
+    // 清理敌机/道具
+    this.enemies = this.enemies.filter(e => !e.dead);
+    this.items = this.items.filter(i => !i.dead);
+    this.projectilesP = this.projectilesP.filter(p => !p.dead);
+
+    // 玩家死亡检测
+    if (!this.isDead && this.player.hp <= 0) {
+      this.isDead = true;
+      this.explosions.push(new Explosion(
+        this.player.x + this.player.w/2 - 32,
+        this.player.y + this.player.h/2 - 32
+      ));
+      Resources.playSound('expP');
+      Game.finalScore = this.score;
+    }
+
+    // 死亡后延迟切场景
+    if (this.isDead) {
+      this.deadTimer += dt;
+      if (this.deadTimer > 3) {
+        Game.changeScene(new SceneEnd());
+      }
+    }
+  }
+  playerGetItem(it) {
+    this.score += 5;
+    if (it.type === 'life' && this.player.hp < this.player.maxHp) {
+      this.player.hp++;
+    }
+    Resources.playSound('item');
+  }
+  killEnemy(e) {
+    this.explosions.push(new Explosion(
+      e.x + e.w/2 - 32, e.y + e.h/2 - 32
+    ));
+    Resources.playSound('expE');
+    if (Math.random() < this.itemDropChance) {
+      this.items.push(new Item(e.x + e.w/2 - 12, e.y + e.h/2 - 12));
+    }
+    this.score += 10;
+  }
+  enemyShoot(e) {
+    const px = this.player.x + this.player.w/2;
+    const py = this.player.y + this.player.h/2;
+    const ex = e.x + e.w/2;
+    const ey = e.y + e.h/2;
+    let dx = px - ex, dy = py - ey;
+    const len = Math.sqrt(dx*dx + dy*dy) || 1;
+    dx /= len; dy /= len;
+    this.projectilesE.push(new ProjectileE(ex - 4, ey - 4, dx, dy));
+    Resources.playSound('shootE');
+  }
+
+  render() {
+    Game.farStars.render();
+    Game.nearStars.render();
+
+    for (const p of this.projectilesP) p.render();
+    for (const p of this.projectilesE) p.render();
+    for (const e of this.enemies) e.render();
+    for (const it of this.items) it.render();
+    this.player.render();
+    for (const ex of this.explosions) ex.render();
+
+    this.renderUI();
+    this.renderCheats();
+  }
+  renderUI() {
+    // 血条
+    for (let i = 0; i < this.player.maxHp; i++) {
+      ctx.fillStyle = i < this.player.hp ? '#ff4444' : '#555';
+      ctx.fillRect(10 + i * 40, 10, 32, 32);
+      ctx.strokeStyle = '#888';
+      ctx.strokeRect(10 + i * 40, 10, 32, 32);
+    }
+    // 分数
+    ctx.textAlign = 'right';
+    ctx.fillStyle = '#fff';
+    ctx.font = '24px monospace';
+    ctx.fillText('SCORE:' + this.score, W - 10, 32);
+    ctx.textAlign = 'left';
+  }
+  renderCheats() {
+    const c = Game.cheats;
+    const active = [];
+    if (c.godMode)     active.push('F1 无敌');
+    if (c.oneHitKill)  active.push('F2 一击必杀');
+    if (c.rapidFire)   active.push('F3 极速射击');
+    if (c.freezeEnemy) active.push('F5 冻结敌机');
+    if (c.slowBullets) active.push('F6 慢速敌弹');
+    if (active.length > 0) {
+      ctx.fillStyle = '#ffdc00';
+      ctx.font = 'bold 16px sans-serif';
+      ctx.fillText('[作弊器]', 10, 58);
+      ctx.font = '14px sans-serif';
+      ctx.fillStyle = '#00ff64';
+      active.forEach((l, i) => ctx.fillText('  ON  ' + l, 10, 80 + i * 20));
+    }
+    ctx.fillStyle = '#888';
+    ctx.font = '12px sans-serif';
+    ctx.fillText('F7 +1000分', 10, 80 + active.length * 20 + 4);
+  }
+
+  handleEvent() {
+    if (Input.wasPressed('escape')) {
+      Game.changeScene(new SceneTitle());
+      return;
+    }
+    if (Input.wasPressed('r')) {
+      Game.changeScene(new SceneHelp());
+      return;
+    }
+    if (Input.wasPressed('f1')) Game.cheats.godMode = !Game.cheats.godMode;
+    if (Input.wasPressed('f2')) Game.cheats.oneHitKill = !Game.cheats.oneHitKill;
+    if (Input.wasPressed('f3')) Game.cheats.rapidFire = !Game.cheats.rapidFire;
+    if (Input.wasPressed('f5')) Game.cheats.freezeEnemy = !Game.cheats.freezeEnemy;
+    if (Input.wasPressed('f6')) Game.cheats.slowBullets = !Game.cheats.slowBullets;
+    if (Input.wasPressed('f7')) this.score += 1000;
+  }
+}
+
+class SceneEnd extends Scene {
+  constructor() {
+    super();
+    this.leaderBoard = Game.loadLeaderBoard();
+    this.entered = false;
+    this.name = '';
+    this.hasSubmitted = false;
+  }
+  update(dt, now) {}
+  render() {
+    Game.farStars.render();
+    Game.nearStars.render();
+    ctx.textAlign = 'center';
+
+    ctx.fillStyle = '#f44';
+    ctx.font = 'bold 48px "Microsoft YaHei", sans-serif';
+    ctx.fillText('游戏结束', W / 2, 180);
+
+    ctx.fillStyle = '#fff';
+    ctx.font = '32px sans-serif';
+    ctx.fillText('最终分数: ' + Game.finalScore, W / 2, 260);
+
+    // 排行榜
+    ctx.fillStyle = '#ffd700';
+    ctx.font = 'bold 24px sans-serif';
+    ctx.fillText('--- 排行榜 ---', W / 2, 340);
+
+    const lb = Game.loadLeaderBoard();
+    ctx.font = '18px sans-serif';
+    lb.slice(0, 8).forEach((e, i) => {
+      ctx.fillStyle = i === 0 ? '#ffd700' : i < 3 ? '#c0c0c0' : '#ccc';
+      ctx.fillText((i+1) + '. ' + e.name + '  -  ' + e.score, W / 2, 380 + i * 28);
+    });
+
+    ctx.fillStyle = '#888';
+    ctx.font = '16px sans-serif';
+    ctx.fillText('按 J 返回标题  |  按 ESC 退出', W / 2, H - 40);
+    ctx.textAlign = 'left';
+  }
+  handleEvent() {
+    if (Input.wasPressed('j') || Input.wasPressed('escape')) {
+      // 自动保存分数到排行榜（名字用 Player）
+      Game.saveScoreToLeaderBoard('Player', Game.finalScore);
+      Game.changeScene(new SceneTitle());
+    }
+  }
+}
+
+// ---------- 游戏主类 ----------
+const Game = {
+  difficulty: Difficulty.Normal,
+  scene: null,
+  cheats: {
+    godMode: false, oneHitKill: false, rapidFire: false,
+    freezeEnemy: false, slowBullets: false
+  },
+  finalScore: 0,
+  nearStars: null,
+  farStars: null,
+  lastTime: 0,
+  running: false,
+
+  start() {
+    Input.init();
+    this.farStars = new StarField(30, 80);
+    this.nearStars = new StarField(80, 40);
+    this.changeScene(new SceneTitle());
+    this.running = true;
+    this.lastTime = performance.now();
+    requestAnimationFrame(this.loop.bind(this));
+  },
+  changeScene(scene) {
+    if (this.scene && this.scene.cleanup) this.scene.cleanup();
+    Resources.stopMusic();
+    this.scene = scene;
+    if (scene instanceof SceneTitle) Resources.playMusic('title');
+    else if (scene instanceof SceneMain) Resources.playMusic('main');
+  },
+  loop(now) {
+    if (!this.running) return;
+    const dt = Math.min((now - this.lastTime) / 1000, 0.05);
+    this.lastTime = now;
+
+    // 背景
+    this.farStars.update(dt);
+    this.nearStars.update(dt);
+
+    // 场景更新
+    if (this.scene) {
+      this.scene.update(dt, now);
+      this.scene.handleEvent();
+    }
+
+    // 渲染
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, W, H);
+    if (this.scene) this.scene.render();
+
+    Input.endFrame();
+    requestAnimationFrame(this.loop.bind(this));
+  },
+
+  // ---------- 排行榜 ----------
+  loadLeaderBoard() {
+    try {
+      const raw = localStorage.getItem('sdlshooter_leaderboard');
+      if (raw) return JSON.parse(raw);
+    } catch {}
+    return [];
+  },
+  saveLeaderBoard(list) {
+    try { localStorage.setItem('sdlshooter_leaderboard', JSON.stringify(list)); } catch {}
+  },
+  saveScoreToLeaderBoard(name, score) {
+    const lb = this.loadLeaderBoard();
+    lb.push({ name: name || 'Player', score, time: Date.now() });
+    // 同名只保留最高分
+    const best = {};
+    for (const e of lb) {
+      if (!best[e.name] || e.score > best[e.name].score) best[e.name] = e;
+    }
+    const unique = Object.values(best);
+    unique.sort((a, b) => b.score - a.score);
+    this.saveLeaderBoard(unique.slice(0, 20));
+  }
+};
+
+// ---------- 启动 ----------
+Resources.loadAll();
+</script>
+</body>
+</html>
