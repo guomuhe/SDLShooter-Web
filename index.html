@@ -113,11 +113,13 @@ const Resources = {
   loadAll() {
     const total = Object.keys(ASSETS.images).length + Object.keys(ASSETS.sounds).length + Object.keys(ASSETS.music).length;
     let loaded = 0;
+    let started = false;
     const bar = document.getElementById('barFill');
     const updateBar = () => {
       loaded++;
       if (bar) bar.style.width = (loaded / total * 100) + '%';
-      if (loaded >= total) {
+      if (!started && loaded >= total) {
+        started = true;
         setTimeout(() => {
           document.getElementById('loading').style.display = 'none';
           Game.start();
@@ -838,8 +840,6 @@ const Game = {
     requestAnimationFrame(this.loop.bind(this));
   },
   changeScene(scene) {
-    console.log('[DEBUG] changeScene:', this.scene?.constructor?.name || 'null', '→', scene?.constructor?.name, new Date().toISOString());
-    console.trace('[DEBUG] call stack:');
     if (this.scene && this.scene.cleanup) this.scene.cleanup();
     Resources.stopMusic();
     this.scene = scene;
